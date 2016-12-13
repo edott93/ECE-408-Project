@@ -14,7 +14,7 @@
 
 #define NUM_ROWS 28
 #define NUM_COLS 28
-#define NUM_CHANNELS 1
+#define NUM_CHANNELS 1 // 1 input
 #define NUM_DIGITS 10
 
 static int FLAGS_batch_size = 10000;
@@ -22,12 +22,12 @@ static std::string FLAGS_testdata{};
 static std::string FLAGS_model{};
 
 // Data and reference data dimensions
-static int xdims[] = {FLAGS_batch_size, NUM_ROWS, NUM_COLS, NUM_CHANNELS};
-static int rdims[] = {FLAGS_batch_size, NUM_DIGITS};
+static int xdims[] = {FLAGS_batch_size, NUM_ROWS, NUM_COLS, NUM_CHANNELS}; //actual input data dimensions
+static int rdims[] = {FLAGS_batch_size, NUM_DIGITS}; //reference labels. Each sample in batch contains a vector of NUM_DIGITS size. 
 
 // Model dimensions
-static int conv1dims[] = {5, 5, 1, 32};
-static int conv2dims[] = {5, 5, 32, 64};
+static int conv1dims[] = {5, 5, 1, 32}; //5 x 5 filter. 1 input channel featured, 32 output features
+static int conv2dims[] = {5, 5, 32, 64}; //32 input features, 64 output features
 static int fc1dims[]   = {1024, 128};
 static int fc2dims[]   = {128, 10};
 
@@ -102,6 +102,7 @@ static void loadModel(float *conv1, float *conv2, float *fc1, float *fc2) {
 }
 
 // From book chapter Figure 16.4
+
 static void conv_forward_valid(const float *X, const int xdims[4],
                                const float *W, const int wdims[4], float *Y,
                                const int ydims[4]) {
@@ -109,13 +110,13 @@ static void conv_forward_valid(const float *X, const int xdims[4],
   const auto filter_w   = wdims[1];
   const auto in_channel = wdims[2];
 
-  for (const auto i : range(0, ydims[0])) {
-    for (const auto m : range(0, ydims[3])) {
-      for (const auto w : range(0, ydims[2])) {
-        for (const auto h : range(0, ydims[1])) {
-          for (const auto p : range(0, filter_h)) {
-            for (const auto q : range(0, filter_w)) {
-              for (const auto c : range(0, in_channel)) {
+  for (const auto i : range(0, ydims[0])) { //for each sample in batch 
+    for (const auto m : range(0, ydims[3])) { //for each output feature map
+      for (const auto w : range(0, ydims[2])) { //for width of output element
+        for (const auto h : range(0, ydims[1])) { //for height of output element
+          for (const auto p : range(0, filter_h)) { //for height of filter
+            for (const auto q : range(0, filter_w)) { //for width of filter
+              for (const auto c : range(0, in_channel)) { //for each input feature
                 const auto yoffset =
                     ((i * ydims[1] + h) * ydims[2] + w) * ydims[3] + m;
                 const auto xoffset = i * xdims[1] * xdims[2] * xdims[3] +
@@ -132,6 +133,11 @@ static void conv_forward_valid(const float *X, const int xdims[4],
     }
   }
 }
+
+
+
+
+
 
 // Recified linear unit 4d
 static void relu4(float *X, const int xdims[4]) {
@@ -199,40 +205,486 @@ static void argmax(const float *X, const int xdims[2], int *Y) {
   }
 }
 
+/*
+__global__ void unroll_Input(int C, int H_out, int W_out, int K, int H, float *X, float *X_unroll)
+{
+    int t =  blockIdx.x * 1024 + threadIdx.x;
+    int W_unroll = H_out * W_out;
+    int c, s, h_out, w_out, h_unroll, w_unroll, w_base;
+
+    if (t < C * W_unroll)
+    {
+      c = t / W_unroll;
+      s = t % W_unroll;
+      h_out = s / W_out;
+      W_out = s % W_out;
+      h_unroll = s;
+      w_base = c * K * K;
+      for (const p : range(0, K))
+      {
+        for (const q : range(0, K))
+        {
+          w_unroll = w_base + p * K + q;
+          X_unroll[w_unroll * H_out * W_out + h_unroll] = X[(h_out + p) * H * C + (w_out + q) * C + c];
+        }
+      }
+    }
+}
+*/
+
+
+__global__ void unroll_InputOptimized(int C, int H_out, int W_out, int K, int W, float *X, float *X_unroll)
+{
+    int t =  blockIdx.x * 1024 + threadIdx.x;
+    int W_unroll = H_out * W_out;
+    int c, s, h_out, w_out, h_unroll, w_unroll, w_base;
+    if (t < C * W_unroll)
+    {
+      c = t % C;
+      s = t / C;
+      //printf(" %d", s);
+      h_out = s / W_out;
+      w_out = s % W_out;
+      h_unroll = s;
+      w_base = c * K * K;
+      for (const p : range(0, K))
+      {
+        for (const q : range(0, K))
+        {
+          w_unroll = w_base + p * K + q;   
+          X_unroll[w_unroll * H_out * W_out + h_unroll] = X[(h_out + p) * W * C + (w_out + q) * C + c];
+          //printf("%d ", (h_out + p) * W * C + (w_out + q) * C + c);
+        }
+      }
+
+
+    }
+}
+
+__global__ void unroll_W(int C, int M, int K, float * W, float * W_unroll)
+{
+    //C 3, M 2, K 2
+    int t = blockIdx.x * 1024 + threadIdx.x;
+    if (t < C * M)
+    {
+      int m = t % M;
+      int c = t / M;
+      int unroll_width = C * K * K;
+      for (const p : range(0, K))
+      {
+        for (const q : range(0, K))
+        {
+          W_unroll[unroll_width * m + K * K * c + p * K + q] = W[p * K * C * M + q * C * M + c * M + m];
+          //printf("%d ", p * K * C * M + q * C * M + c * M + m);
+        }
+      }
+    }
+}
+
+__global__ void matrixMultiply(float *A, float *B, float *C, int numARows,
+                               int numAColumns, int numBRows,
+                               int numBColumns, int numCRows,
+                               int numCColumns) {
+  __shared__ float subTileM[16][16];
+  __shared__ float subTileN[16][16];
+  
+  int bx = blockIdx.x;  int by = blockIdx.y;
+  int tx = threadIdx.x; int ty = threadIdx.y;
+  
+  int Row = by * 16 + ty;  
+  int Col = bx * 16 + tx;  
+  float Pvalue = 0;
+  
+  for (int m = 0; m < ((numAColumns + 16) - 1)/16; m++)
+  {
+      if (m * 16 + tx < numAColumns && Row < numARows) 
+      {
+        subTileM[ty][tx] = A[Row*numAColumns+m*16+tx];
+      }
+      else 
+      {
+        subTileM[ty][tx] = 0;
+      }
+      if (m * 16 + ty < numBRows && Col < numBColumns)
+      {
+        subTileN[ty][tx] = B[(m*16+ty)*numBColumns + Col];
+      }
+      else
+      {
+      subTileN[ty][tx] = 0;
+      }
+    
+      __syncthreads();
+      for(int k = 0; k < 16; k++)
+       {
+          Pvalue += subTileM[ty][k] * subTileN[k][tx];
+         __syncthreads();
+       }
+      if (Row < numCRows && Col < numCColumns)
+      {
+          C[Row * numCColumns + Col] = Pvalue;
+      }
+    
+  }
+}
+
+__global__ void placeIntoY(float *Y_unroll, float *deviceY, int H, int W)
+{
+    int t =  blockIdx.x * 1024 + threadIdx.x;
+    if (t < W)
+    {
+      for (const x : range(0, H))
+      {
+        deviceY[t * H + x] = Y_unroll[t + x * W];
+      }
+     
+    }
+
+}
+
+void convLayer_forward(int xdims[4], int wdims[4], float* X, float* Y, float* W)
+{
+
+    float *deviceX;
+    float *deviceX2;
+
+    float *deviceW;
+    float *deviceW2;
+
+    float *deviceY;
+    float *deviceY2;
+
+
+    //float *Xcheck;
+
+    float *deviceYUnrollCheck;
+    //float *deviceXUnrollCheck;
+    //float *deviceWUnrollCheck;
+
+    float *deviceUnrollX;
+    float *deviceUnrollX2;
+
+    float *deviceUnrollW;
+
+    float *deviceUnrollY;
+    float *deviceUnrollY2;
+
+    int H_out = xdims[1] - wdims[0] + 1;
+    int W_out = xdims[2] - wdims[1] + 1;
+
+    int M = wdims[3];
+    int C = wdims[2];
+    int N = xdims[0];
+
+    cudaMalloc((void**) &deviceX, xdims[1] * xdims[2] * xdims[3] * sizeof(float));
+    cudaMalloc((void**) &deviceW, wdims[0] * wdims[1] * wdims[2] *  wdims[3] * sizeof(float));
+    cudaMalloc((void**) &deviceY, xdims[0] * (xdims[1] - wdims[0] + 1) * (xdims[2] - wdims[1] + 1) *  wdims[3] * sizeof(float));
+    //Xcheck = (float *)malloc(xdims[1] * xdims[2] * xdims[3] * sizeof(float));
+
+
+    cudaMalloc((void**) &deviceX2, xdims[1] * xdims[2] * xdims[3] * sizeof(float));
+    cudaMalloc((void**) &deviceW2, wdims[0] * wdims[1] * wdims[2] *  wdims[3] * sizeof(float));
+    cudaMalloc((void**) &deviceY2, xdims[0] * (xdims[1] - wdims[0] + 1) * (xdims[2] - wdims[1] + 1) *  wdims[3] * sizeof(float));
+    
+
+    cudaMalloc((void**) &deviceUnrollY, M * H_out * W_out * sizeof(float));
+    cudaMalloc((void**) &deviceUnrollX, H_out * W_out * (wdims[0] * wdims[1] * C) * sizeof(float));
+    cudaMalloc((void**) &deviceUnrollW, wdims[0] * wdims[1] * wdims[2] *  wdims[3] * sizeof(float));
+
+
+    cudaMalloc((void**) &deviceUnrollY2, M * H_out * W_out * sizeof(float));
+    cudaMalloc((void**) &deviceUnrollX2, H_out * W_out * (wdims[0] * wdims[1] * C) * sizeof(float));
+
+
+    //deviceWUnrollCheck = (float *)malloc(wdims[0] * wdims[1] * wdims[2] *  wdims[3] * sizeof(float));
+    deviceYUnrollCheck = (float *)malloc(M * H_out * W_out * sizeof(float));
+    //deviceXUnrollCheck = (float *)malloc(H_out * W_out * (wdims[0] * wdims[1] * C) * sizeof(float));
+
+    
+    int X_height = C * wdims[0] * wdims[1];
+    int X_width = H_out * W_out;
+
+    int W_width = X_height;
+    int W_height = M;
+    
+
+    int Y_height = W_height;
+    int Y_width = X_width;
+    
+
+    dim3 DimBlock(1024, 1, 1);
+
+    int num_threadsInput = C * H_out * W_out;
+    int num_blocksInput =  ceil((num_threadsInput + 1023) / 1024);
+    //printf("numblocksinput: %d", num_blocksInput);
+    dim3 DimGridInput(num_blocksInput, 1, 1);
+
+    int num_threadsW = C * M;
+    //printf("num_threadsW is %d", num_threadsW);
+    int num_blocksW = ((num_threadsW + 1023) / 1024);
+    //printf("num_blocksW is %d", num_blocksW);
+    dim3 DimGridW(num_blocksW, 1, 1);
+
+    dim3 DimBlockMultiply(16, 16, 1);
+    int x = (Y_width+ 16 - 1)/16;
+    int y = (Y_height + 16 - 1)/16;
+    dim3 DimGridMultiply(x, y, 1);
+
+    int num_threadsY = H_out * W_out;
+    int num_blocksY = ((num_threadsY + 1023) / 1024);
+    dim3 DimGridY(num_blocksY, 1, 1);
+
+    cudaMemcpy(deviceW, W, wdims[0] * wdims[1] * wdims[2] *  wdims[3] * sizeof(float), cudaMemcpyHostToDevice);
+   
+    /*
+    for (const auto i : range(0, N))
+    {
+        cudaMemcpy(deviceX, &X[i * xdims[1] * xdims[2] * xdims[3]], xdims[1] * xdims[2] * xdims[3] * sizeof(float), cudaMemcpyHostToDevice);
+
+        unroll_InputOptimized<<<DimGridInput, DimBlock>>>(C, H_out, W_out, wdims[0], xdims[2], deviceX, deviceUnrollX);
+
+        cudaDeviceSynchronize();
+
+        //cudaMemcpy(deviceXUnrollCheck, deviceUnrollX, H_out * W_out * (wdims[0] * wdims[1] * C) * sizeof(float), cudaMemcpyDeviceToHost);        
+
+        unroll_W<<<DimGridW, DimBlock>>>(C, M, wdims[0], deviceW, deviceUnrollW);
+
+        cudaDeviceSynchronize();
+        //unroll_W<<<DimGridW, DimBlock>>>(3, 2, 2, deviceW, deviceUnrollW);
+
+
+        //cudaMemcpy(deviceWUnrollCheck, deviceUnrollW, wdims[0] * wdims[1] * wdims[2] *  wdims[3] * sizeof(float), cudaMemcpyDeviceToHost);        
+        
+        matrixMultiply<<<DimGridMultiply, DimBlockMultiply>>> (deviceUnrollW, deviceUnrollX, deviceUnrollY, W_height, W_width, X_height, 
+                                        X_width, Y_height, Y_width);
+
+        cudaDeviceSynchronize();
+
+        cudaMemcpy(deviceYUnrollCheck, deviceUnrollY, M * H_out * W_out * sizeof(float), cudaMemcpyDeviceToHost);        
+
+
+        placeIntoY<<<DimGridY, DimBlock>>>(deviceUnrollY, deviceY, M, H_out * W_out);
+
+        cudaDeviceSynchronize();
+
+        cudaMemcpy(&Y[i * H_out * W_out * M], deviceY, H_out * W_out * M * sizeof(float), cudaMemcpyDeviceToHost);      
+    } 
+    */
+    
+
+    
+    cudaStream_t stream0;
+    cudaStream_t stream1;
+
+    cudaStreamCreate(&stream0);
+    cudaStreamCreate(&stream1);
+
+    for (auto i = 0; i < N; i+=2)
+    {
+        cudaMemcpyAsync(deviceX, &X[i * xdims[1] * xdims[2] * xdims[3]], xdims[1] * xdims[2] * xdims[3] * sizeof(float), cudaMemcpyHostToDevice, stream0);
+        cudaMemcpyAsync(deviceX2, &X[(i+1) * xdims[1] * xdims[2] * xdims[3]], xdims[1] * xdims[2] * xdims[3] * sizeof(float), cudaMemcpyHostToDevice, stream1);
+
+
+        unroll_InputOptimized<<<DimGridInput, DimBlock, 0, stream0>>>(C, H_out, W_out, wdims[0], xdims[2], deviceX, deviceUnrollX);
+        unroll_InputOptimized<<<DimGridInput, DimBlock, 0, stream1>>>(C, H_out, W_out, wdims[0], xdims[2], deviceX2, deviceUnrollX2);
+
+        //cudaMemcpy(deviceXUnrollCheck, deviceUnrollX, H_out * W_out * (wdims[0] * wdims[1] * C) * sizeof(float), cudaMemcpyDeviceToHost);        
+
+        unroll_W<<<DimGridW, DimBlock, 0, stream0>>>(C, M, wdims[0], deviceW, deviceUnrollW);
+
+        cudaDeviceSynchronize();
+  
+        //unroll_W<<<DimGridW, DimBlock>>>(3, 2, 2, deviceW, deviceUnrollW);
+
+        //cudaMemcpy(deviceWUnrollCheck, deviceUnrollW, wdims[0] * wdims[1] * wdims[2] *  wdims[3] * sizeof(float), cudaMemcpyDeviceToHost);        
+        
+        matrixMultiply<<<DimGridMultiply, DimBlockMultiply, 0, stream0>>> (deviceUnrollW, deviceUnrollX, deviceUnrollY, W_height, W_width, X_height, 
+                                        X_width, Y_height, Y_width);
+
+        matrixMultiply<<<DimGridMultiply, DimBlockMultiply, 0, stream1>>> (deviceUnrollW, deviceUnrollX2, deviceUnrollY2, W_height, W_width, X_height, 
+                                        X_width, Y_height, Y_width);
+
+
+        //cudaMemcpy(deviceYUnrollCheck, deviceUnrollY, M * H_out * W_out * sizeof(float), cudaMemcpyDeviceToHost);        
+
+
+        placeIntoY<<<DimGridY, DimBlock, 0, stream0>>>(deviceUnrollY, deviceY, M, H_out * W_out);
+        placeIntoY<<<DimGridY, DimBlock, 0, stream1>>>(deviceUnrollY2, deviceY2, M, H_out * W_out);
+
+        cudaMemcpyAsync(&Y[i * H_out * W_out * M], deviceY, H_out * W_out * M * sizeof(float), cudaMemcpyDeviceToHost, stream0);   
+        cudaMemcpyAsync(&Y[(i+1) * H_out * W_out * M], deviceY2, H_out * W_out * M * sizeof(float), cudaMemcpyDeviceToHost, stream1);      
+   
+    } 
+    
+
+}
+
+__global__ void subsample(float *deviceInput, int inputH, int inputW, int outputW, int outputH, float *deviceOutput, int poolsize, int M)
+{
+  int t =  blockIdx.x * 1024 + threadIdx.x;
+  if (t < (outputH * outputW * M))
+  {
+
+    int m = t % M;
+    //int m = t % 3;
+
+    int distance = t / M * poolsize;
+    //int distance = t / 3 * poolsize;
+
+    int w = distance % inputW; 
+    //int w = distance % 4;
+
+    int h = (distance / inputW) * poolsize;
+    //int h = (distance / 4) * poolsize;
+
+    float sum = 0;
+    float average = 0;
+    for (const p : range(0, poolsize))
+      {
+        for (const q : range(0, poolsize))
+        {
+          sum += deviceInput[(h + p) * inputH * M + (w + q) * M + m];
+        }
+      }
+
+      average = sum / float(poolsize * poolsize);
+      deviceOutput[(h/poolsize) * outputH * M + (w/poolsize) * M + m] = average;
+
+  }
+}
+
+void subsampling_layer(float *input, float *output, int poolsize, int inputdims[4], int outputdims[4])
+{
+    float * deviceX;
+    float * deviceY;
+
+    float * deviceX2;
+    float * deviceY2;
+
+    int N = inputdims[0];
+    int H_in = inputdims[1];
+    int W_in = inputdims[2];
+
+    int H_out = outputdims[1];
+    int W_out = outputdims[2];
+
+
+    cudaMalloc((void**) &deviceX, inputdims[1] * inputdims[2] * inputdims[3] * sizeof(float));
+    cudaMalloc((void**) &deviceY, outputdims[1] * outputdims[2] * outputdims[3] * sizeof(float));
+
+    cudaMalloc((void**) &deviceX2, inputdims[1] * inputdims[2] * inputdims[3] * sizeof(float));
+    cudaMalloc((void**) &deviceY2, outputdims[1] * outputdims[2] * outputdims[3] * sizeof(float));
+
+    dim3 DimBlockSample(1024, 1, 1);
+
+    int num_threadsInput = outputdims[1] * outputdims[2] * outputdims[3];
+    int num_blocksInput =  ceil((num_threadsInput + 1023) / 1024);
+    //printf("numblocksinput: %d", num_blocksInput);
+    dim3 DimGridSample(num_blocksInput, 1, 1);
+
+
+    cudaStream_t stream0;
+    cudaStream_t stream1;
+
+    cudaStreamCreate(&stream0);
+    cudaStreamCreate(&stream1);
+    
+    /*
+    for (const auto i : range(0, N))
+    {
+       cudaMemcpy(deviceX, &input[i * inputdims[1] * inputdims[2] * inputdims[3]], inputdims[1] * 
+        inputdims[2] * inputdims[3] * sizeof(float), cudaMemcpyHostToDevice);
+
+       subsample<<<DimGridSample, DimBlockSample>>>(deviceX, H_in, W_in, W_out, H_out, deviceY, poolsize, inputdims[3]);
+       cudaDeviceSynchronize();
+
+        cudaMemcpy(&output[i * outputdims[1] * outputdims[2] * outputdims[3]], deviceY, 
+          outputdims[1] * outputdims[2] * outputdims[3] * sizeof(float), cudaMemcpyDeviceToHost);      
+    }
+
+    */
+    
+
+    
+    for (auto i = 0; i < N; i+=2)
+    {
+       cudaMemcpyAsync(deviceX, &input[i * inputdims[1] * inputdims[2] * inputdims[3]], inputdims[1] * 
+        inputdims[2] * inputdims[3] * sizeof(float), cudaMemcpyHostToDevice, stream0);
+
+       cudaMemcpyAsync(deviceX2, &input[(i+1) * inputdims[1] * inputdims[2] * inputdims[3]], inputdims[1] * 
+        inputdims[2] * inputdims[3] * sizeof(float), cudaMemcpyHostToDevice, stream1);
+
+       subsample<<<DimGridSample, DimBlockSample, 0, stream0>>>(deviceX, H_in, W_in, W_out, H_out, deviceY, poolsize, inputdims[3]);
+
+       subsample<<<DimGridSample, DimBlockSample, 0, stream1>>>(deviceX2, H_in, W_in, W_out, H_out, deviceY2, poolsize, inputdims[3]);
+
+       cudaMemcpyAsync(&output[i * outputdims[1] * outputdims[2] * outputdims[3]], deviceY, 
+       outputdims[1] * outputdims[2] * outputdims[3] * sizeof(float), cudaMemcpyDeviceToHost, stream0);   
+
+       cudaMemcpyAsync(&output[(i+1) * outputdims[1] * outputdims[2] * outputdims[3]], deviceY2, 
+       outputdims[1] * outputdims[2] * outputdims[3] * sizeof(float), cudaMemcpyDeviceToHost, stream1);    
+
+    }
+    
+    
+}
+
 // Forward operation for the CNN, a combination of conv layer + average pooling
 // + relu
 void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
                        float *fc2, int *out) {
+
   // conv layer
-  const int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1),
-                       (xdims[2] - conv1dims[1] + 1), conv1dims[3]};
+  int adims[] = {xdims[0], (xdims[1] - conv1dims[0] + 1),
+                       (xdims[2] - conv1dims[1] + 1), conv1dims[3]}; //batch size, output_height, output_width, number of output features
   auto a = zeros<float>(adims);
-  conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
+  //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
+  convLayer_forward(xdims, conv1dims, x, a, conv1);
+
+  /*
+  for (const auto y : range (0, 28))
+  {
+    for (const i : range(0,28))
+    {
+      printf("%.2f ", x[y * 28 + i]);
+    }
+    printf("\n");
+  }
+  */
+  //printf(" size is %d", xdims[0]* (xdims[1] - conv1dims[0] + 1) *
+    //                   (xdims[2] - conv1dims[1] + 1) * conv1dims[3]);
 
   /// relu layer
   relu4(a, adims);
 
   // average pooling
   const int pool_size = 2;
-  const int bdims[]   = {adims[0], adims[1] / pool_size, adims[2] / pool_size,
+  int bdims[]   = {adims[0], adims[1] / pool_size, adims[2] / pool_size,
                        adims[3]};
   auto b = zeros<float>(bdims);
-  average_pool(a, adims, pool_size, b, bdims);
+  //average_pool(a, adims, pool_size, b, bdims);
+  subsampling_layer(a, b, pool_size, adims, bdims);
 
   // conv layer
-  const int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1),
+  int cdims[] = {bdims[0], (bdims[1] - conv2dims[0] + 1),
                        (bdims[2] - conv2dims[1] + 1), conv2dims[3]};
   auto c = zeros<float>(cdims);
-  conv_forward_valid(b, bdims, conv2, conv2dims, c, cdims);
+  //conv_forward_valid(b, bdims, conv2, conv2dims, c, cdims);
+
+  convLayer_forward(bdims, conv2dims, b, c, conv2);
+
 
   // relu
   relu4(c, cdims);
 
   // average pooling
-  const int ddims[] = {cdims[0], cdims[1] / pool_size, cdims[2] / pool_size,
+  int ddims[] = {cdims[0], cdims[1] / pool_size, cdims[2] / pool_size,
                        cdims[3]};
   auto d = zeros<float>(ddims);
-  average_pool(c, cdims, pool_size, d, ddims);
+  //average_pool(c, cdims, pool_size, d, ddims);
+
+  subsampling_layer(c, d, pool_size, cdims, ddims);
+
 
   // reshape
   const int ddims2[] = {ddims[0], ddims[1] * ddims[2] * ddims[3]};
@@ -261,6 +713,9 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 }
 
 int main(int argc, char **argv) {
+
+  //size_t sz = 1048576 * 4;
+ //cudaDeviceSetLimit(cudaLimitPrintfFifoSize, sz);
 
   if (argc != 3 && argc != 4) {
     std::cerr << "\n"
@@ -292,8 +747,8 @@ int main(int argc, char **argv) {
   rdims[0] = FLAGS_batch_size;
 
   // Load data into x and y
-  float *x = allocate<float>(xdims);
-  float *y = allocate<float>(rdims);
+  float *x = allocate<float>(xdims); //x contains data for images
+  float *y = allocate<float>(rdims); //y contains label vectors of images
   loadData(x, y);
 
   // Load model
@@ -303,8 +758,8 @@ int main(int argc, char **argv) {
   float *fc2   = allocate<float>(fc2dims);
   loadModel(conv1, conv2, fc1, fc2);
 
-  // Perform foward opertion
-  int *out = zeros<int>(FLAGS_batch_size);
+  // Perform forward opertion
+  int *out = zeros<int>(FLAGS_batch_size); //contains predicted labels for each sample
 
   // get start time
   const auto start = now();
@@ -319,7 +774,7 @@ int main(int argc, char **argv) {
       std::chrono::duration<double, std::milli>(end - start).count();
 
   // Get reference
-  int *ref = zeros<int>(FLAGS_batch_size);
+  int *ref = zeros<int>(FLAGS_batch_size); //contains true labels for each sample
   argmax(y, rdims, ref);
 
   // Calculate correctness
