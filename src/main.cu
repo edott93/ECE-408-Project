@@ -176,18 +176,18 @@ static void average_pool(const float *X, const int xdims[4],
   }
 }
 
-static void fully_forward(const float *X, const int xdims[2], float *W,
-                          const int wdims[2], float *Y, const int ydims[2]) {
-  for (const auto i : range(0, xdims[0])) {
-    for (const auto j : range(0, wdims[1])) {
-      float sum = 0;
-      for (const auto k : range(0, xdims[1])) {
-        sum += X[i * xdims[1] + k] * W[k * wdims[1] + j];
-      }
-      Y[i * wdims[1] + j] = sum;
-    }
-  }
-}
+// static void fully_forward(const float *X, const int xdims[2], float *W,
+//                           const int wdims[2], float *Y, const int ydims[2]) {
+//   for (const auto i : range(0, xdims[0])) {
+//     for (const auto j : range(0, wdims[1])) {
+//       float sum = 0;
+//       for (const auto k : range(0, xdims[1])) {
+//         sum += X[i * xdims[1] + k] * W[k * wdims[1] + j];
+//       }
+//       Y[i * wdims[1] + j] = sum;
+//     }
+//   }
+// }
 
 // Choose the guess with largest score
 static void argmax(const float *X, const int xdims[2], int *Y) {
@@ -628,6 +628,72 @@ void subsampling_layer(float *input, float *output, int poolsize, int inputdims[
     
     
 }
+
+void fully_forward(const float *X, const int xdims[2], float *W,
+                          const int wdims[2], float *Y, const int ydims[2]) {
+
+  int numARows = xdims[0], numAColumns = xdims[1];
+  int numBRows = wdims[0], numBColumns = wdims[1];
+  int numCRows = ydims[0], numCColumns = ydims[1];
+  
+  float *deviceA;
+  float *deviceB;
+  float *deviceC;
+
+  //@@ Allocate GPU memory here
+  cudaMalloc((void**) &deviceA, numARows*numAColumns*sizeof(float));
+  cudaMalloc((void**) &deviceB, numBRows*numBColumns*sizeof(float));
+  cudaMalloc((void**) &deviceC, numCRows*numCColumns*sizeof(float));
+
+  //@@ Copy memory to the GPU here
+  cudaMemcpy(deviceA, X, numARows*numAColumns*sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(deviceB, Y, numBRows*numBColumns*sizeof(float), cudaMemcpyHostToDevice);
+
+  //@@ Initialize the grid and block dimensions here
+  dim3 DimGrid(ceil(numCColumns/16.0), ceil(numCRows / 16.0), 1);
+  if(numCColumns % 16) {
+    DimGrid.x++;
+  }
+  if(numCRows % 16) {
+    DimGrid.y++;
+  }
+  dim3 DimBlock(16, 16, 1);
+
+  //@@ Launch the GPU Kernel here
+  matrixMultiply<<<DimGrid,DimBlock>>>(deviceA,deviceB,deviceC,numARows,
+                               numAColumns, numBRows,
+                               numBColumns, numCRows,
+                               numCColumns);
+
+  cudaDeviceSynchronize();
+
+  //@@ Copy the GPU memory back to the CPU here
+  cudaMemcpy(Y, deviceC, numCRows*numCColumns*sizeof(float), cudaMemcpyDeviceToHost);
+
+  //@@ Free the GPU memory here
+  cudaFree(deviceA);
+  cudaFree(deviceB);
+  cudaFree(deviceC);
+}
+//my code
+// __global__ void fully_forward(const float *X, const int xdims[2], float *W,
+//                           const int wdims[2], float *Y, const int ydims[2]) {
+//   int numARows = xdims[0], numAColumns = xdims[1];
+//   int numBRows = wdims[0], numBColumns = wdims[1];
+//   int numCRows = ydims[0], numCColumns = ydims[1];
+
+//   int Row = blockIdx.y * blockDim.y + threadIdx.y;
+//   int Col = blockIdx.x * blockDim.x + threadIdx.x;
+//   float Pvalue = 0;
+//   if ((Row < numCRows) && (Col < numCColumns)) {
+//     Pvalue = 0;
+//     for (int k = 0; k < numAColumns; ++k) {
+//       Pvalue += X[Row * numAColumns + k] * W[k * numBColumns + Col];
+//     }
+//     Y[Row * numCColumns + Col] = Pvalue;
+//   }
+
+// }
 
 // Forward operation for the CNN, a combination of conv layer + average pooling
 // + relu
