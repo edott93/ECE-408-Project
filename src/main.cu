@@ -354,7 +354,6 @@ void convLayer_forward(int xdims[4], int wdims[4], float* X, float* Y, float* W)
     float *deviceY;
     float *deviceY2;
 
-
     //float *Xcheck;
 
     float *deviceYUnrollCheck;
@@ -634,6 +633,7 @@ void fully_forward(const float *X, const int xdims[2], float *W,
 
   int numARows = xdims[0], numAColumns = xdims[1];
   int numBRows = wdims[0], numBColumns = wdims[1];
+  //int numCRows = numARows, numCColumns = numBColumns;
   int numCRows = ydims[0], numCColumns = ydims[1];
   
   float *deviceA;
@@ -647,7 +647,7 @@ void fully_forward(const float *X, const int xdims[2], float *W,
 
   //@@ Copy memory to the GPU here
   cudaMemcpy(deviceA, X, numARows*numAColumns*sizeof(float), cudaMemcpyHostToDevice);
-  cudaMemcpy(deviceB, Y, numBRows*numBColumns*sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(deviceB, W, numBRows*numBColumns*sizeof(float), cudaMemcpyHostToDevice);
 
   //@@ Initialize the grid and block dimensions here
   dim3 DimGrid(ceil(numCColumns/16.0), ceil(numCRows / 16.0), 1);
@@ -675,25 +675,6 @@ void fully_forward(const float *X, const int xdims[2], float *W,
   cudaFree(deviceB);
   cudaFree(deviceC);
 }
-//my code
-// __global__ void fully_forward(const float *X, const int xdims[2], float *W,
-//                           const int wdims[2], float *Y, const int ydims[2]) {
-//   int numARows = xdims[0], numAColumns = xdims[1];
-//   int numBRows = wdims[0], numBColumns = wdims[1];
-//   int numCRows = ydims[0], numCColumns = ydims[1];
-
-//   int Row = blockIdx.y * blockDim.y + threadIdx.y;
-//   int Col = blockIdx.x * blockDim.x + threadIdx.x;
-//   float Pvalue = 0;
-//   if ((Row < numCRows) && (Col < numCColumns)) {
-//     Pvalue = 0;
-//     for (int k = 0; k < numAColumns; ++k) {
-//       Pvalue += X[Row * numAColumns + k] * W[k * numBColumns + Col];
-//     }
-//     Y[Row * numCColumns + Col] = Pvalue;
-//   }
-
-// }
 
 // Forward operation for the CNN, a combination of conv layer + average pooling
 // + relu
