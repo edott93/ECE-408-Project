@@ -384,12 +384,13 @@ __global__ void matrixMultiply(float *A, float *B, float *C, int numARows,
 __global__ void placeIntoY(float *Y_unroll, float *deviceY, int H, int W)
 {
     int t =  blockIdx.x * 1024 + threadIdx.x;
-    if (t < W)
+    if (t < W * H)
     {
-      for (const x : range(0, H))
-      {
-        deviceY[t * H + x] = Y_unroll[t + x * W];
-      }
+      int h = t / W;
+      int w = t % W;
+
+      deviceY[w * H + h] = Y_unroll[w + h * W];
+      
      
     }
 
@@ -482,7 +483,7 @@ void convLayer_forward(int xdims[4], int wdims[4], float* X, float* Y, float* W)
     int y = (Y_height + 16 - 1)/16;
     dim3 DimGridMultiply(x, y, 1);
 
-    int num_threadsY = H_out * W_out;
+    int num_threadsY = H_out * W_out * M;
     int num_blocksY = ((num_threadsY + 1023) / 1024);
     dim3 DimGridY(num_blocksY, 1, 1);
 
