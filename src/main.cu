@@ -138,7 +138,7 @@ static void conv_forward_valid(const float *X, const int xdims[4],
 
 
 
-
+/*
 // Recified linear unit 4d
 static void relu4(float *X, const int xdims[4]) {
   for (const auto i : range(0, xdims[0] * xdims[1] * xdims[2] * xdims[3])) {
@@ -152,6 +152,7 @@ static void relu2(float *X, const int xdims[2]) {
     X[i] = (X[i] < 0) ? 0 : X[i];
   }
 }
+*/
 
 // From book chapter Figure 16.5
 static void average_pool(const float *X, const int xdims[4],
@@ -203,6 +204,58 @@ static void argmax(const float *X, const int xdims[2], int *Y) {
     }
     Y[i] = max_idx;
   }
+}
+
+
+__global__ void relu(float *deviceX, int size)
+{
+  int t =  blockIdx.x * 1024 + threadIdx.x;
+  if (t < size)
+    deviceX[t] = (deviceX[t] < 0) ? 0 : deviceX[t];
+}
+
+void relu2(float *X, const int xdims[2]) 
+{
+  float * deviceX;
+  int size = xdims[0] * xdims[1];
+
+  cudaMalloc((void**) &deviceX, size * sizeof(float));
+  cudaMemcpy(deviceX, X, size * sizeof(float), cudaMemcpyHostToDevice);
+
+
+  dim3 DimBlock(1024, 1, 1);
+
+  int num_threadsInput = size;
+  int num_blocksInput =  ceil((num_threadsInput + 1023) / 1024);    
+  dim3 DimGrid(num_blocksInput, 1, 1);
+
+  relu<<<DimGrid, DimBlock>>> (deviceX, size);
+  cudaMemcpy(X, deviceX, size * sizeof(float), cudaMemcpyDeviceToHost);   
+
+
+}
+
+void relu4(float *X, const int xdims[4]) 
+{
+  float * deviceX;
+  int size = xdims[0] * xdims[1] * xdims[2] * xdims[3];
+
+  cudaMalloc((void**) &deviceX, size * sizeof(float));
+  cudaMemcpy(deviceX, X, size * sizeof(float), cudaMemcpyHostToDevice);
+
+
+  dim3 DimBlock(1024, 1, 1);
+
+  int num_threadsInput = size;
+  int num_blocksInput =  ceil((num_threadsInput + 1023) / 1024);    
+  dim3 DimGrid(num_blocksInput, 1, 1);
+
+  relu<<<DimGrid, DimBlock>>> (deviceX, size);
+
+  cudaMemcpy(X, deviceX, size * sizeof(float), cudaMemcpyDeviceToHost);   
+
+
+
 }
 
 /*
@@ -826,11 +879,14 @@ int main(int argc, char **argv) {
 
   // Calculate correctness
   int num_correct = 0;
+
+  
   for (const auto i : range(0, FLAGS_batch_size)) {
     if (out[i] == ref[i]) {
       num_correct++;
     }
   }
+  
   std::cout << "Done with " << FLAGS_batch_size << " queries in "
             << "elapsed = " << elapsed << " milliseconds. Correctness: "
             << static_cast<float>(num_correct) / FLAGS_batch_size << "\n";
