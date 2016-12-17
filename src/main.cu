@@ -286,7 +286,7 @@ __global__ void unroll_Input(int C, int H_out, int W_out, int K, int H, float *X
 */
 
 
-__global__ void unroll_InputOptimized(int C, int H_out, int W_out, int K, int W, float *X, float *X_unroll)
+__global__ void unroll_InputOptimized(int C, int H_out, int W_out, int K, int W, float *X, float *X_unroll, int index)
 {
     int t =  blockIdx.x * 1024 + threadIdx.x;
     int W_unroll = H_out * W_out;
@@ -305,7 +305,7 @@ __global__ void unroll_InputOptimized(int C, int H_out, int W_out, int K, int W,
         for (const q : range(0, K))
         {
           w_unroll = w_base + p * K + q;   
-          X_unroll[w_unroll * H_out * W_out + h_unroll] = X[(h_out + p) * W * C + (w_out + q) * C + c];
+          X_unroll[w_unroll * H_out * W_out + h_unroll] = X[index + (h_out + p) * W * C + (w_out + q) * C + c];
           //printf("%d ", (h_out + p) * W * C + (w_out + q) * C + c);
         }
       }
@@ -381,7 +381,7 @@ __global__ void matrixMultiply(float *A, float *B, float *C, int numARows,
   }
 }
 
-__global__ void placeIntoY(float *Y_unroll, float *deviceY, int H, int W)
+__global__ void placeIntoY(float *Y_unroll, float *deviceY, int H, int W, int index)
 {
     int t =  blockIdx.x * 1024 + threadIdx.x;
     if (t < W * H)
@@ -389,7 +389,7 @@ __global__ void placeIntoY(float *Y_unroll, float *deviceY, int H, int W)
       int h = t / W;
       int w = t % W;
 
-      deviceY[w * H + h] = Y_unroll[w + h * W];
+      deviceY[index + w * H + h] = Y_unroll[w + h * W];
       
      
     }
@@ -429,7 +429,9 @@ void convLayer_forward(int xdims[4], int wdims[4], float* X, float* Y, float* W)
     int C = wdims[2];
     int N = xdims[0];
 
-    cudaMalloc((void**) &deviceX, xdims[1] * xdims[2] * xdims[3] * sizeof(float));
+    //cudaMalloc((void**) &deviceX, xdims[1] * xdims[2] * xdims[3] * sizeof(float));
+    cudaMalloc((void**) &deviceX, xdims[0] * xdims[1] * xdims[2] * xdims[3] * sizeof(float));
+
     cudaMalloc((void**) &deviceW, wdims[0] * wdims[1] * wdims[2] *  wdims[3] * sizeof(float));
     cudaMalloc((void**) &deviceY, xdims[0] * (xdims[1] - wdims[0] + 1) * (xdims[2] - wdims[1] + 1) *  wdims[3] * sizeof(float));
     //Xcheck = (float *)malloc(xdims[1] * xdims[2] * xdims[3] * sizeof(float));
@@ -524,8 +526,9 @@ void convLayer_forward(int xdims[4], int wdims[4], float* X, float* Y, float* W)
     } 
     */
     
+    /*
+    unroll_W<<<DimGridW, DimBlock>>>(C, M, wdims[0], deviceW, deviceUnrollW);
 
-    
     cudaStream_t stream0;
     cudaStream_t stream1;
 
@@ -542,10 +545,6 @@ void convLayer_forward(int xdims[4], int wdims[4], float* X, float* Y, float* W)
         unroll_InputOptimized<<<DimGridInput, DimBlock, 0, stream1>>>(C, H_out, W_out, wdims[0], xdims[2], deviceX2, deviceUnrollX2);
 
         //cudaMemcpy(deviceXUnrollCheck, deviceUnrollX, H_out * W_out * (wdims[0] * wdims[1] * C) * sizeof(float), cudaMemcpyDeviceToHost);        
-
-        unroll_W<<<DimGridW, DimBlock, 0, stream0>>>(C, M, wdims[0], deviceW, deviceUnrollW);
-
-        cudaDeviceSynchronize();
   
         //unroll_W<<<DimGridW, DimBlock>>>(3, 2, 2, deviceW, deviceUnrollW);
 
@@ -568,11 +567,52 @@ void convLayer_forward(int xdims[4], int wdims[4], float* X, float* Y, float* W)
         cudaMemcpyAsync(&Y[(i+1) * H_out * W_out * M], deviceY2, H_out * W_out * M * sizeof(float), cudaMemcpyDeviceToHost, stream1);      
    
     } 
+    */
+
+    
+    unroll_W<<<DimGridW, DimBlock>>>(C, M, wdims[0], deviceW, deviceUnrollW);
+
+    cudaStream_t stream0;
+    cudaStream_t stream1;
+
+    cudaStreamCreate(&stream0);
+    cudaStreamCreate(&stream1);
+
+    cudaMemcpy(deviceX, X, xdims[0] * xdims[1] * xdims[2] * xdims[3] * sizeof(float), cudaMemcpyHostToDevice);
+
+
+    for (auto i = 0; i < N; i+=2)
+    {
+        int index = i * xdims[1] * xdims[2] * xdims[3];
+        int index1 = (i+1) * xdims[1] * xdims[2] * xdims[3];
+
+        int yindex = i * H_out * W_out * M;
+        int yindex1 = (i+1) * H_out * W_out * M;
+
+        unroll_InputOptimized<<<DimGridInput, DimBlock, 0, stream0>>>(C, H_out, W_out, wdims[0], xdims[2], deviceX, deviceUnrollX, index);
+        unroll_InputOptimized<<<DimGridInput, DimBlock, 0, stream1>>>(C, H_out, W_out, wdims[0], xdims[2], deviceX, deviceUnrollX2, index1);    
+        
+        matrixMultiply<<<DimGridMultiply, DimBlockMultiply, 0, stream0>>> (deviceUnrollW, deviceUnrollX, deviceUnrollY, W_height, W_width, X_height, 
+                                        X_width, Y_height, Y_width);
+
+        matrixMultiply<<<DimGridMultiply, DimBlockMultiply, 0, stream1>>> (deviceUnrollW, deviceUnrollX2, deviceUnrollY2, W_height, W_width, X_height, 
+                                        X_width, Y_height, Y_width);     
+
+        placeIntoY<<<DimGridY, DimBlock, 0, stream0>>>(deviceUnrollY, deviceY, M, H_out * W_out, yindex);
+        placeIntoY<<<DimGridY, DimBlock, 0, stream1>>>(deviceUnrollY2, deviceY, M, H_out * W_out, yindex1); 
+   
+    } 
+
+     cudaMemcpy(Y, deviceY, N * H_out * W_out * M * sizeof(float), cudaMemcpyDeviceToHost);   
+
+
+ 
     
 
 }
 
-__global__ void subsample(float *deviceInput, int inputH, int inputW, int outputW, int outputH, float *deviceOutput, int poolsize, int M)
+
+__global__ void subsample(float *deviceInput, int inputH, int inputW, int outputW, int outputH, float *deviceOutput, int poolsize, int M, int index, int outdex)
 {
   int t =  blockIdx.x * 1024 + threadIdx.x;
   if (t < (outputH * outputW * M))
@@ -596,12 +636,12 @@ __global__ void subsample(float *deviceInput, int inputH, int inputW, int output
       {
         for (const q : range(0, poolsize))
         {
-          sum += deviceInput[(h + p) * inputH * M + (w + q) * M + m];
+          sum += deviceInput[index + (h + p) * inputH * M + (w + q) * M + m];
         }
       }
 
       average = sum / float(poolsize * poolsize);
-      deviceOutput[(h/poolsize) * outputH * M + (w/poolsize) * M + m] = average;
+      deviceOutput[outdex + (h/poolsize) * outputH * M + (w/poolsize) * M + m] = average;
 
   }
 }
@@ -622,8 +662,8 @@ void subsampling_layer(float *input, float *output, int poolsize, int inputdims[
     int W_out = outputdims[2];
 
 
-    cudaMalloc((void**) &deviceX, inputdims[1] * inputdims[2] * inputdims[3] * sizeof(float));
-    cudaMalloc((void**) &deviceY, outputdims[1] * outputdims[2] * outputdims[3] * sizeof(float));
+    cudaMalloc((void**) &deviceX, inputdims[0] * inputdims[1] * inputdims[2] * inputdims[3] * sizeof(float));
+    cudaMalloc((void**) &deviceY, outputdims[0] * outputdims[1] * outputdims[2] * outputdims[3] * sizeof(float));
 
     cudaMalloc((void**) &deviceX2, inputdims[1] * inputdims[2] * inputdims[3] * sizeof(float));
     cudaMalloc((void**) &deviceY2, outputdims[1] * outputdims[2] * outputdims[3] * sizeof(float));
@@ -657,7 +697,7 @@ void subsampling_layer(float *input, float *output, int poolsize, int inputdims[
 
     */
     
-
+/*
     
     for (auto i = 0; i < N; i+=2)
     {
@@ -678,7 +718,30 @@ void subsampling_layer(float *input, float *output, int poolsize, int inputdims[
        outputdims[1] * outputdims[2] * outputdims[3] * sizeof(float), cudaMemcpyDeviceToHost, stream1);    
 
     }
+
+    */
+
+     cudaMemcpy(deviceX, input, inputdims[0] * inputdims[1] * 
+        inputdims[2] * inputdims[3] * sizeof(float), cudaMemcpyHostToDevice);
+
+    for (auto i = 0; i < N; i+=2)
+    {
+
+      int index = i * inputdims[1] * inputdims[2] * inputdims[3];
+      int index1 = (i + 1) * inputdims[1] * inputdims[2] * inputdims[3];
+
+      int outindex =  i * outputdims[1] * outputdims[2] * outputdims[3];
+      int outindex1 =  (i+1)* outputdims[1] * outputdims[2] * outputdims[3];
+
+
+
+       subsample<<<DimGridSample, DimBlockSample, 0, stream0>>>(deviceX, H_in, W_in, W_out, H_out, deviceY, poolsize, inputdims[3], index, outindex);
+
+       subsample<<<DimGridSample, DimBlockSample, 0, stream1>>>(deviceX, H_in, W_in, W_out, H_out, deviceY, poolsize, inputdims[3], index1, outindex1);  
+
+    }
     
+    cudaMemcpy(output, deviceY, outputdims[0] * outputdims[1] * outputdims[2] * outputdims[3] * sizeof(float), cudaMemcpyDeviceToHost);   
     
 }
 
