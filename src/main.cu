@@ -381,6 +381,55 @@ __global__ void matrixMultiply(float *A, float *B, float *C, int numARows,
   }
 }
 
+__global__ void matrixMultiply1(float *A, float *B, float *C, int numARows,
+                               int numAColumns, int numBRows,
+                               int numBColumns, int numCRows,
+                               int numCColumns) {
+  __shared__ float subTileM[16][16];
+  __shared__ float subTileN[16][16];
+  
+  int bx = blockIdx.x;  int by = blockIdx.y;
+  int tx = threadIdx.x; int ty = threadIdx.y;
+  
+  int Row = by * 16 + ty;  
+  int Col = bx * 16 + tx;  
+  float Pvalue = 0;
+  
+  for (int m = 0; m < ((numAColumns + 16) - 1)/16; m++)
+  {
+      if (m * 16 + tx < numAColumns && Row < numARows) 
+      {
+        subTileM[ty][tx] = A[Row*numAColumns+m*16+tx];
+      }
+      else 
+      {
+        subTileM[ty][tx] = 0;
+      }
+      if (m * 16 + ty < numBRows && Col < numBColumns)
+      {
+        subTileN[ty][tx] = B[(m*16+ty)*numBColumns + Col];
+      }
+      else
+      {
+      subTileN[ty][tx] = 0;
+      }
+    
+      __syncthreads();
+      for(int k = 0; k < 16; k++)
+       {
+          Pvalue += subTileM[ty][k] * subTileN[k][tx];
+         __syncthreads();
+       }
+      if (Row < numCRows && Col < numCColumns)
+      {
+          if (Pvalue < 0)
+            C[Row * numCColumns + Col] = 0;
+          else C[Row * numCColumns + Col] = Pvalue;
+      }
+    
+  }
+}
+
 __global__ void placeIntoY(float *Y_unroll, float *deviceY, int H, int W, int index)
 {
     int t =  blockIdx.x * 1024 + threadIdx.x;
@@ -389,7 +438,11 @@ __global__ void placeIntoY(float *Y_unroll, float *deviceY, int H, int W, int in
       int h = t / W;
       int w = t % W;
 
-      deviceY[index + w * H + h] = Y_unroll[w + h * W];
+      if (Y_unroll[w + h * W] < 0)
+      {
+        deviceY[index + w * H + h] = 0;
+      }
+      else deviceY[index + w * H + h] = Y_unroll[w + h * W];
       
      
     }
@@ -560,7 +613,7 @@ void convLayer_forward(int xdims[4], int wdims[4], float* X, float* Y, float* W)
         //cudaMemcpy(deviceYUnrollCheck, deviceUnrollY, M * H_out * W_out * sizeof(float), cudaMemcpyDeviceToHost);        
 
 
-        placeIntoY<<<DimGridY, DimBlock, 0, stream0>>>(deviceUnrollY, deviceY, M, H_out * W_out);
+        placeIntoY<<<DimGridY, DimBlock, 0, stream0>>>(deviceUnrollY, deviceY, M, H_out * W_out); 
         placeIntoY<<<DimGridY, DimBlock, 0, stream1>>>(deviceUnrollY2, deviceY2, M, H_out * W_out);
 
         cudaMemcpyAsync(&Y[i * H_out * W_out * M], deviceY, H_out * W_out * M * sizeof(float), cudaMemcpyDeviceToHost, stream0);   
@@ -746,7 +799,7 @@ void subsampling_layer(float *input, float *output, int poolsize, int inputdims[
 }
 
 void fully_forward(const float *X, const int xdims[2], float *W,
-                          const int wdims[2], float *Y, const int ydims[2]) {
+                          const int wdims[2], float *Y, const int ydims[2], int check) {
 
   int numARows = xdims[0], numAColumns = xdims[1];
   int numBRows = wdims[0], numBColumns = wdims[1];
@@ -777,7 +830,12 @@ void fully_forward(const float *X, const int xdims[2], float *W,
   dim3 DimBlock(16, 16, 1);
 
   //@@ Launch the GPU Kernel here
-  matrixMultiply<<<DimGrid,DimBlock>>>(deviceA,deviceB,deviceC,numARows,
+  if (check == 1)
+    matrixMultiply1<<<DimGrid,DimBlock>>>(deviceA,deviceB,deviceC,numARows,
+                               numAColumns, numBRows,
+                               numBColumns, numCRows,
+                               numCColumns);
+  else matrixMultiply<<<DimGrid,DimBlock>>>(deviceA,deviceB,deviceC,numARows,
                                numAColumns, numBRows,
                                numBColumns, numCRows,
                                numCColumns);
@@ -819,7 +877,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
     //                   (xdims[2] - conv1dims[1] + 1) * conv1dims[3]);
 
   /// relu layer
-  relu4(a, adims);
+  //relu4(a, adims);
 
   // average pooling
   const int pool_size = 2;
@@ -839,7 +897,7 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
 
 
   // relu
-  relu4(c, cdims);
+  //relu4(c, cdims);
 
   // average pooling
   int ddims[] = {cdims[0], cdims[1] / pool_size, cdims[2] / pool_size,
@@ -856,15 +914,15 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   // matrix multiplication
   const int edims[] = {ddims[0], fc1dims[1]};
   auto e            = zeros<float>(edims);
-  fully_forward(d, ddims2, fc1, fc1dims, e, edims);
+  fully_forward(d, ddims2, fc1, fc1dims, e, edims, 1);
 
   // relu
-  relu2(e, edims);
+  //relu2(e, edims);
 
   // matrix multiplication
   const int fdims[] = {edims[0], fc2dims[1]};
   auto f            = zeros<float>(fdims);
-  fully_forward(e, edims, fc2, fc2dims, f, fdims);
+  fully_forward(e, edims, fc2, fc2dims, f, fdims, 0);
 
   argmax(f, fdims, out);
 
