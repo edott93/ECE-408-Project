@@ -274,50 +274,82 @@ __global__ void unroll_W(int C, int M, int K, float * W, float * W_unroll)
     }
 }
 
+#define TILE_WIDTH 16
 __global__ void matrixMultiply(float *A, float *B, float *C, int numARows,
                                int numAColumns, int numBRows,
                                int numBColumns, int numCRows,
                                int numCColumns) {
-  __shared__ float subTileM[16][16];
-  __shared__ float subTileN[16][16];
+  // __shared__ float subTileM[16][16];
+  // __shared__ float subTileN[16][16];
   
-  int bx = blockIdx.x;  int by = blockIdx.y;
-  int tx = threadIdx.x; int ty = threadIdx.y;
+  // int bx = blockIdx.x;  int by = blockIdx.y;
+  // int tx = threadIdx.x; int ty = threadIdx.y;
   
-  int Row = by * 16 + ty;  
-  int Col = bx * 16 + tx;  
-  float Pvalue = 0;
+  // int Row = by * 16 + ty;  
+  // int Col = bx * 16 + tx;  
+  // float Pvalue = 0;
   
-  for (int m = 0; m < ((numAColumns + 16) - 1)/16; m++)
-  {
-      if (m * 16 + tx < numAColumns && Row < numARows) 
-      {
-        subTileM[ty][tx] = A[Row*numAColumns+m*16+tx];
-      }
-      else 
-      {
-        subTileM[ty][tx] = 0;
-      }
-      if (m * 16 + ty < numBRows && Col < numBColumns)
-      {
-        subTileN[ty][tx] = B[(m*16+ty)*numBColumns + Col];
-      }
-      else
-      {
-      subTileN[ty][tx] = 0;
-      }
+  // for (int m = 0; m < ((numAColumns + 16) - 1)/16; m++)
+  // {
+  //     if (m * 16 + tx < numAColumns && Row < numARows) 
+  //     {
+  //       subTileM[ty][tx] = A[Row*numAColumns+m*16+tx];
+  //     }
+  //     else 
+  //     {
+  //       subTileM[ty][tx] = 0;
+  //     }
+  //     if (m * 16 + ty < numBRows && Col < numBColumns)
+  //     {
+  //       subTileN[ty][tx] = B[(m*16+ty)*numBColumns + Col];
+  //     }
+  //     else
+  //     {
+  //     subTileN[ty][tx] = 0;
+  //     }
     
-      __syncthreads();
-      for(int k = 0; k < 16; k++)
-       {
-          Pvalue += subTileM[ty][k] * subTileN[k][tx];
-         __syncthreads();
-       }
-      if (Row < numCRows && Col < numCColumns)
-      {
-          C[Row * numCColumns + Col] = Pvalue;
-      }
+  //     __syncthreads();
+  //     for(int k = 0; k < 16; k++)
+  //      {
+  //         Pvalue += subTileM[ty][k] * subTileN[k][tx];
+  //        __syncthreads();
+  //      }
+  //     if (Row < numCRows && Col < numCColumns)
+  //     {
+  //         C[Row * numCColumns + Col] = Pvalue;
+  //     }
     
+  // }
+  __shared__ float subTileM[TILE_WIDTH][TILE_WIDTH];
+  __shared__ float subTileN[TILE_WIDTH][TILE_WIDTH];
+  
+  int Row = blockIdx.y * blockDim.y + threadIdx.y;
+  int Col = blockIdx.x * blockDim.x + threadIdx.x;
+  
+  float Pvalue = 0.0;
+  
+  // figure this shit out
+  for (int i = 0; i < (numAColumns-1)/TILE_WIDTH + 1; i++) {
+    
+    if ((Row < numARows) && ((i * TILE_WIDTH + threadIdx.x) < numAColumns))
+      subTileM[threadIdx.y][threadIdx.x] = A[Row * numAColumns + (i * TILE_WIDTH + threadIdx.x)];
+    else
+      subTileM[threadIdx.y][threadIdx.x] = 0.0;
+    
+    if ((Col < numBColumns) && ((i * TILE_WIDTH + threadIdx.y) < numAColumns))
+      subTileN[threadIdx.y][threadIdx.x] = B[(i * TILE_WIDTH + threadIdx.y) * numBColumns + Col];
+    else
+      subTileN[threadIdx.y][threadIdx.x] = 0.0;
+    
+    __syncthreads();
+    for (int j = 0; j < TILE_WIDTH; j++) {
+      Pvalue += subTileM[threadIdx.y][j] * subTileN[j][threadIdx.x];
+    }
+    __syncthreads();
+  }
+  
+  if (Row < numARows && Col < numBColumns) {
+    C[Row * numBColumns + Col] = Pvalue;
   }
 }
 
@@ -325,48 +357,81 @@ __global__ void matrixMultiply1(float *A, float *B, float *C, int numARows,
                                int numAColumns, int numBRows,
                                int numBColumns, int numCRows,
                                int numCColumns) {
-  __shared__ float subTileM[16][16];
-  __shared__ float subTileN[16][16];
+  // __shared__ float subTileM[16][16];
+  // __shared__ float subTileN[16][16];
   
-  int bx = blockIdx.x;  int by = blockIdx.y;
-  int tx = threadIdx.x; int ty = threadIdx.y;
+  // int bx = blockIdx.x;  int by = blockIdx.y;
+  // int tx = threadIdx.x; int ty = threadIdx.y;
   
-  int Row = by * 16 + ty;  
-  int Col = bx * 16 + tx;  
-  float Pvalue = 0;
+  // int Row = by * 16 + ty;  
+  // int Col = bx * 16 + tx;  
+  // float Pvalue = 0;
   
-  for (int m = 0; m < ((numAColumns + 16) - 1)/16; m++)
-  {
-      if (m * 16 + tx < numAColumns && Row < numARows) 
-      {
-        subTileM[ty][tx] = A[Row*numAColumns+m*16+tx];
-      }
-      else 
-      {
-        subTileM[ty][tx] = 0;
-      }
-      if (m * 16 + ty < numBRows && Col < numBColumns)
-      {
-        subTileN[ty][tx] = B[(m*16+ty)*numBColumns + Col];
-      }
-      else
-      {
-      subTileN[ty][tx] = 0;
-      }
+  // for (int m = 0; m < ((numAColumns + 16) - 1)/16; m++)
+  // {
+  //     if (m * 16 + tx < numAColumns && Row < numARows) 
+  //     {
+  //       subTileM[ty][tx] = A[Row*numAColumns+m*16+tx];
+  //     }
+  //     else 
+  //     {
+  //       subTileM[ty][tx] = 0;
+  //     }
+  //     if (m * 16 + ty < numBRows && Col < numBColumns)
+  //     {
+  //       subTileN[ty][tx] = B[(m*16+ty)*numBColumns + Col];
+  //     }
+  //     else
+  //     {
+  //     subTileN[ty][tx] = 0;
+  //     }
     
-      __syncthreads();
-      for(int k = 0; k < 16; k++)
-       {
-          Pvalue += subTileM[ty][k] * subTileN[k][tx];
-         __syncthreads();
-       }
-      if (Row < numCRows && Col < numCColumns)
-      {
-          if (Pvalue < 0)
-            C[Row * numCColumns + Col] = 0;
-          else C[Row * numCColumns + Col] = Pvalue;
-      }
+  //     __syncthreads();
+  //     for(int k = 0; k < 16; k++)
+  //      {
+  //         Pvalue += subTileM[ty][k] * subTileN[k][tx];
+  //        __syncthreads();
+  //      }
+  //     if (Row < numCRows && Col < numCColumns)
+  //     {
+  //         if (Pvalue < 0)
+  //           C[Row * numCColumns + Col] = 0;
+  //         else C[Row * numCColumns + Col] = Pvalue;
+  //     }
     
+  // }
+  __shared__ float subTileM[TILE_WIDTH][TILE_WIDTH];
+  __shared__ float subTileN[TILE_WIDTH][TILE_WIDTH];
+  
+  int Row = blockIdx.y * blockDim.y + threadIdx.y;
+  int Col = blockIdx.x * blockDim.x + threadIdx.x;
+  
+  float Pvalue = 0.0;
+  
+  // figure this shit out
+  for (int i = 0; i < (numAColumns-1)/TILE_WIDTH + 1; i++) {
+    
+    if ((Row < numARows) && ((i * TILE_WIDTH + threadIdx.x) < numAColumns))
+      subTileM[threadIdx.y][threadIdx.x] = A[Row * numAColumns + (i * TILE_WIDTH + threadIdx.x)];
+    else
+      subTileM[threadIdx.y][threadIdx.x] = 0.0;
+    
+    if ((Col < numBColumns) && ((i * TILE_WIDTH + threadIdx.y) < numAColumns))
+      subTileN[threadIdx.y][threadIdx.x] = B[(i * TILE_WIDTH + threadIdx.y) * numBColumns + Col];
+    else
+      subTileN[threadIdx.y][threadIdx.x] = 0.0;
+    
+    __syncthreads();
+    for (int j = 0; j < TILE_WIDTH; j++) {
+      Pvalue += subTileM[threadIdx.y][j] * subTileN[j][threadIdx.x];
+    }
+    __syncthreads();
+  }
+  
+  if (Row < numARows && Col < numBColumns) {
+    if (Pvalue < 0)
+      C[Row * numCColumns + Col] = 0;
+  else C[Row * numCColumns + Col] = Pvalue;
   }
 }
 
