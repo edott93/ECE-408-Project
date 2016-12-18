@@ -136,24 +136,6 @@ static void conv_forward_valid(const float *X, const int xdims[4],
 
 
 
-
-
-/*
-// Recified linear unit 4d
-static void relu4(float *X, const int xdims[4]) {
-  for (const auto i : range(0, xdims[0] * xdims[1] * xdims[2] * xdims[3])) {
-    X[i] = (X[i] < 0) ? 0 : X[i];
-  }
-}
-
-// Recified linear unit 2d
-static void relu2(float *X, const int xdims[2]) {
-  for (const auto i : range(0, xdims[0] * xdims[1])) {
-    X[i] = (X[i] < 0) ? 0 : X[i];
-  }
-}
-*/
-
 // From book chapter Figure 16.5
 static void average_pool(const float *X, const int xdims[4],
                          const int pool_size, float *Y, const int ydims[4]) {
@@ -177,18 +159,6 @@ static void average_pool(const float *X, const int xdims[4],
   }
 }
 
-// static void fully_forward(const float *X, const int xdims[2], float *W,
-//                           const int wdims[2], float *Y, const int ydims[2]) {
-//   for (const auto i : range(0, xdims[0])) {
-//     for (const auto j : range(0, wdims[1])) {
-//       float sum = 0;
-//       for (const auto k : range(0, xdims[1])) {
-//         sum += X[i * xdims[1] + k] * W[k * wdims[1] + j];
-//       }
-//       Y[i * wdims[1] + j] = sum;
-//     }
-//   }
-// }
 
 // Choose the guess with largest score
 static void argmax(const float *X, const int xdims[2], int *Y) {
@@ -257,33 +227,6 @@ void relu4(float *X, const int xdims[4])
 
 
 }
-
-/*
-__global__ void unroll_Input(int C, int H_out, int W_out, int K, int H, float *X, float *X_unroll)
-{
-    int t =  blockIdx.x * 1024 + threadIdx.x;
-    int W_unroll = H_out * W_out;
-    int c, s, h_out, w_out, h_unroll, w_unroll, w_base;
-
-    if (t < C * W_unroll)
-    {
-      c = t / W_unroll;
-      s = t % W_unroll;
-      h_out = s / W_out;
-      W_out = s % W_out;
-      h_unroll = s;
-      w_base = c * K * K;
-      for (const p : range(0, K))
-      {
-        for (const q : range(0, K))
-        {
-          w_unroll = w_base + p * K + q;
-          X_unroll[w_unroll * H_out * W_out + h_unroll] = X[(h_out + p) * H * C + (w_out + q) * C + c];
-        }
-      }
-    }
-}
-*/
 
 
 __global__ void unroll_InputOptimized(int C, int H_out, int W_out, int K, int W, float *X, float *X_unroll, int index)
@@ -657,14 +600,43 @@ void convLayer_forward(int xdims[4], int wdims[4], float* X, float* Y, float* W)
     } 
 
      cudaMemcpy(Y, deviceY, N * H_out * W_out * M * sizeof(float), cudaMemcpyDeviceToHost);   
+     
 
 
+/*
+     unroll_W<<<DimGridW, DimBlock>>>(C, M, wdims[0], deviceW, deviceUnrollW);
+
+    cudaStream_t stream0;
+    cudaStream_t stream1;
+
+    cudaStreamCreate(&stream0);
+    cudaStreamCreate(&stream1);
+
+    cudaMemcpy(deviceX, X, xdims[0] * xdims[1] * xdims[2] * xdims[3] * sizeof(float), cudaMemcpyHostToDevice);
+
+
+
+        int inputsize = xdims[1] * xdims[2] * xdims[3];
+
+        int outputsize = H_out * W_out * M;
+
+        unroll_InputOptimized<<<DimGridInput, DimBlock>>>(C, H_out, W_out, wdims[0], xdims[2], deviceX, deviceUnrollX, inputsize);
+        
+        matrixMultiply<<<DimGridMultiply, DimBlockMultiply>>> (deviceUnrollW, deviceUnrollX, deviceUnrollY, W_height, W_width, X_height, 
+                                        X_width, Y_height, Y_width); 
+
+        placeIntoY<<<DimGridY, DimBlock, 0, stream0>>>(deviceUnrollY, deviceY, M, H_out * W_out, outputsize);
+
+
+     cudaMemcpy(Y, deviceY, N * H_out * W_out * M * sizeof(float), cudaMemcpyDeviceToHost);   
+
+*/
  
     
 
 }
 
-
+/*
 __global__ void subsample(float *deviceInput, int inputH, int inputW, int outputW, int outputH, float *deviceOutput, int poolsize, int M, int index, int outdex)
 {
   int t =  blockIdx.x * 1024 + threadIdx.x;
@@ -698,6 +670,46 @@ __global__ void subsample(float *deviceInput, int inputH, int inputW, int output
 
   }
 }
+*/
+
+__global__ void subsample(float *deviceInput, int inputH, int inputW, int outputW, int outputH, float *deviceOutput, int poolsize, int M, 
+  int inputsize, int outputsize, int N)
+{
+  int t =  blockIdx.x * 1024 + threadIdx.x;
+  if (t < (outputH * outputW * M * N))
+  {
+
+    int index = t/(outputH * outputW * M);
+
+    int m = (t%(outputH * outputW * M)) % M;
+    //int m = t % 3;
+
+    int distance = (t%(outputH * outputW * M)) / M * poolsize;
+    //int distance = t / 3 * poolsize;
+
+    int w = distance % inputW; 
+    //int w = distance % 4;
+
+    int h = (distance / inputW) * poolsize;
+    //int h = (distance / 4) * poolsize;
+
+    float sum = 0;
+    float average = 0;
+    for (const p : range(0, poolsize))
+      {
+        for (const q : range(0, poolsize))
+        {
+          sum += deviceInput[(index * inputsize) + (h + p) * inputH * M + (w + q) * M + m];
+        }
+      }
+
+      average = sum / float(poolsize * poolsize);
+      deviceOutput[(index * outputsize) + (h/poolsize) * outputH * M + (w/poolsize) * M + m] = average;
+      //__syncthreads();
+
+
+  }
+}
 
 void subsampling_layer(float *input, float *output, int poolsize, int inputdims[4], int outputdims[4])
 {
@@ -723,7 +735,7 @@ void subsampling_layer(float *input, float *output, int poolsize, int inputdims[
 
     dim3 DimBlockSample(1024, 1, 1);
 
-    int num_threadsInput = outputdims[1] * outputdims[2] * outputdims[3];
+    int num_threadsInput = outputdims[1] * outputdims[2] * outputdims[3] * N;
     int num_blocksInput =  ceil((num_threadsInput + 1023) / 1024);
     //printf("numblocksinput: %d", num_blocksInput);
     dim3 DimGridSample(num_blocksInput, 1, 1);
@@ -774,6 +786,8 @@ void subsampling_layer(float *input, float *output, int poolsize, int inputdims[
 
     */
 
+    /*
+
      cudaMemcpy(deviceX, input, inputdims[0] * inputdims[1] * 
         inputdims[2] * inputdims[3] * sizeof(float), cudaMemcpyHostToDevice);
 
@@ -795,7 +809,21 @@ void subsampling_layer(float *input, float *output, int poolsize, int inputdims[
     }
     
     cudaMemcpy(output, deviceY, outputdims[0] * outputdims[1] * outputdims[2] * outputdims[3] * sizeof(float), cudaMemcpyDeviceToHost);   
+
+    */
     
+    cudaMemcpy(deviceX, input, inputdims[0] * inputdims[1] * 
+        inputdims[2] * inputdims[3] * sizeof(float), cudaMemcpyHostToDevice);
+    
+    int inputsize = inputdims[1] * inputdims[2] * inputdims[3];
+    int outputsize = outputdims[1] * outputdims[2] * outputdims[3];
+
+
+    subsample<<<DimGridSample, DimBlockSample>>>(deviceX, H_in, W_in, W_out, H_out, deviceY, poolsize, inputdims[3], inputsize, outputsize, N);
+
+
+    
+    cudaMemcpy(output, deviceY, outputdims[0] * outputdims[1] * outputdims[2] * outputdims[3] * sizeof(float), cudaMemcpyDeviceToHost);   
 }
 
 void fully_forward(const float *X, const int xdims[2], float *W,
@@ -863,18 +891,6 @@ void forward_operation(float *x, float *conv1, float *conv2, float *fc1,
   //conv_forward_valid(x, xdims, conv1, conv1dims, a, adims);
   convLayer_forward(xdims, conv1dims, x, a, conv1);
 
-  /*
-  for (const auto y : range (0, 28))
-  {
-    for (const i : range(0,28))
-    {
-      printf("%.2f ", x[y * 28 + i]);
-    }
-    printf("\n");
-  }
-  */
-  //printf(" size is %d", xdims[0]* (xdims[1] - conv1dims[0] + 1) *
-    //                   (xdims[2] - conv1dims[1] + 1) * conv1dims[3]);
 
   /// relu layer
   //relu4(a, adims);
