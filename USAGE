@@ -1,0 +1,26 @@
+To run the code, we followed the directions that were given to use the rai system.
+	./rai -d <project folder>
+Since there is a separate build file for the submission process, it doesn't make much sense 
+to include ours but here is the final one. Must be placed in the project directory
+
+rai:
+  version: 0.1
+resources:
+  gpus: 1
+commands:
+  build:
+    - echo "Submitting project"
+    - cp -r /src /build/submission_code
+    - cmake -DCONFIG_USE_HUNTER=OFF /src
+    - make
+    - /usr/bin/time ./ece408 /src/data/testfull.hdf5 /src/data/model.hdf5 10000
+
+Profiling can be performed using nvprof. Place the following build commands in your rai-build.yml file
+
+    - >-
+      nvprof --cpu-profiling on --export-profile timeline.nvprof --
+      ./ece408 /src/data/test10.hdf5 /src/data/model.hdf5 10
+    - >-
+      nvprof --cpu-profiling on --export-profile analysis.nvprof --analysis-metrics --
+      ./ece408 /src/data/test10.hdf5 /src/data/model.hdf5 10
+You could change the input and test datasets. This will output two files timeline.nvprof and analysis.nvprof which can be viewed using the nvvp tool (by performing a file>import).
