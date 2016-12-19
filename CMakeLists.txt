@@ -98,7 +98,7 @@ list(APPEND CUDA_NVCC_FLAGS -Xptxas --warn-on-spills)
 
 # Add debugging to CUDA NVCC flags (for NVidia's NSight tools)
 if(CMAKE_BUILD_TYPE MATCHES DEBUG)
-  Set(CUDA_NVCC_FLAGS_DEBUG ${CUDA_NVCC_FLAGS_DEBUG} "-G")
+ Set(CUDA_NVCC_FLAGS_DEBUG ${CUDA_NVCC_FLAGS_DEBUG} "-G")
 endif(CMAKE_BUILD_TYPE MATCHES DEBUG)
 
 ################################

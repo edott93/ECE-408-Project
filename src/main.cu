@@ -421,7 +421,26 @@ void convLayer_forward(int xdims[4], int wdims[4], float* X, float* Y, float* W)
    
     } 
     
-     cudaMemcpy(Y, deviceY, N * H_out * W_out * M * sizeof(float), cudaMemcpyDeviceToHost);   
+    cudaMemcpy(Y, deviceY, N * H_out * W_out * M * sizeof(float), cudaMemcpyDeviceToHost);
+
+    cudaFree(deviceX);
+    cudaFree(deviceX2);
+    cudaFree(deviceX3);
+    cudaFree(deviceX4);
+    cudaFree(deviceW);
+    cudaFree(deviceY);
+    cudaFree(deviceY2);
+    cudaFree(deviceY3);
+    cudaFree(deviceY4);
+    cudaFree(deviceUnrollX);
+    cudaFree(deviceUnrollX2);
+    cudaFree(deviceUnrollX3);
+    cudaFree(deviceUnrollX4);
+    cudaFree(deviceUnrollW);
+    cudaFree(deviceUnrollY);
+    cudaFree(deviceUnrollY2);
+    cudaFree(deviceUnrollY3);
+    cudaFree(deviceUnrollY4);
 }
 
 //Each thread average a two by two square for each output element. Each thread does one output elements in all features and batches
@@ -485,6 +504,9 @@ void subsampling_layer(float *input, float *output, int poolsize, int inputdims[
 
     //copy deviceY into output host memory
     cudaMemcpy(output, deviceY, outputdims[0] * outputdims[1] * outputdims[2] * outputdims[3] * sizeof(float), cudaMemcpyDeviceToHost);   
+
+    cudaFree(deviceX);
+    cudaFree(deviceY);
 }
 
 
